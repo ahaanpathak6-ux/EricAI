@@ -1,2 +1,2 @@
-# fluffy-octo-winner
-This is my first repository where I will be storing my best code. Hope you like it!
+# EricAI
+This is my first AI/LLM project which I built on my own. Hope you like it!
