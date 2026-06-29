@@ -5,10 +5,11 @@ import chess.engine
 import ollama
 import streamlit as st
 
-# Configure logging for production auditing
+# Configure logging to track analysis events and errors
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- PREMIUM STYLESHEET CONFIGURATION ---
+# === PREMIUM STYLESHEET CONFIGURATION ===
+# Custom dark theme with amber accents for the Streamlit UI
 st.set_page_config(page_title="EricAI Pro ♝ // Chess Intelligence Platform", layout="wide")
 
 st.markdown("""
@@ -18,7 +19,7 @@ st.markdown("""
     body, .stApp { background: radial-gradient(circle at 10% 10%, rgba(130, 90, 245, 0.18), transparent 30%), #0d0e11 !important; color: #f4f4f5 !important; }
     [data-testid="stSidebar"] { background: #12141c !important; border-right: 1px solid rgba(255,255,255,0.08); }
     .main h1, .main h2, .main h3, .main p, .main span { color: #ffffff !important; }
-    .metric-card { background: linear-gradient(160deg, rgba(18, 22, 38, 0.95), rgba(28, 30, 50, 0.95)); border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; padding: 26px; min-height: 150px; display: flex; flex-direction: column; justify-content: center; }
+    .metric-card { background: linear-gradient(160deg, rgba(18, 22, 38, 0.95), rgba(28, 30, 50, 0.95)); border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; padding: 26px; min-height: 15[...]
     .metric-value { font-size: 42px; font-weight: 800; color: #f59e0b; line-height: 1.02; margin-bottom: 8px; }
     .metric-label { font-size: 12px; color: #c5c5d1; letter-spacing: 1.4px; text-transform: uppercase; margin-bottom: 8px; display: block; }
     .hero-banner { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; padding: 28px; margin-bottom: 26px; }
@@ -31,9 +32,12 @@ st.markdown("""
 
 
 class ChessOpeningBook:
-    """Manages opening signature translations via historical FEN/EPD transposition arrays."""
+    """
+    Manages chess opening identification by matching FEN/EPD board signatures.
+    Supports 12+ common openings with transposition handling.
+    """
     
-    # Humanized design pattern: Moving massive structures to a localized class attribute
+    # Dictionary mapping EPD signatures to opening names
     OPENINGS = {
         "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -": "King's Pawn Game",
         "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "Open Game (1...e5)",
@@ -51,7 +55,12 @@ class ChessOpeningBook:
 
     @classmethod
     def identify(cls, game_node: chess.pgn.Game) -> str:
+        """
+        Identifies the opening by tracing game moves backward through board states.
+        Returns the opening name if found, otherwise defaults to "Custom System Setup".
+        """
         board = game_node.board()
+        # Walk backward through move stack to find matching EPD signature
         while board.move_stack:
             epd_signature = board.epd()
             if epd_signature in cls.OPENINGS:
@@ -63,18 +72,34 @@ class ChessOpeningBook:
 
 
 class StockfishAnalyzer:
-    """Manages active communication tasks with the Stockfish UCI execution subsystem."""
+    """
+    Analyzes chess games using Stockfish engine to identify blunders and tactical mistakes.
+    Requires Stockfish to be installed locally.
+    """
     
     def __init__(self, target_user: str, max_games: int = 5):
+        """
+        Initialize analyzer with target username and maximum games to process.
+        
+        Args:
+            target_user: Chess username to identify in PGN headers
+            max_games: Maximum number of games to analyze (default: 5)
+        """
         self.target_user = target_user.strip().lower()
         self.max_games = max_games
 
     def run_audit(self, file_wrapper: io.StringIO):
+        """
+        Runs Stockfish analysis on uploaded PGN file.
+        
+        Returns:
+            Tuple of (total_games, avg_collapse_move, primary_opening, blunder_reports)
+        """
         try:
             engine = chess.engine.SimpleEngine.popen_uci("stockfish")
         except Exception as e:
-            logging.error(f"Failed to start Stockfish binary subsystem: {str(e)}")
-            st.error("❌ Stockfish execution failure. Ensure 'brew install stockfish' has been run locally.")
+            logging.error(f"Stockfish engine failed to start: {str(e)}")
+            st.error("❌ Stockfish not found. Install via: brew install stockfish (Mac) or download from stockfishchess.org")
             return 0, 0, "Unknown Repertoire", []
 
         total_games = 0
@@ -87,14 +112,17 @@ class StockfishAnalyzer:
             if not game:
                 break
 
+            # Extract player names from PGN headers
             white = game.headers.get("White", "").strip().lower()
             black = game.headers.get("Black", "").strip().lower()
             
+            # Determine which color the target user was playing
             if self.target_user == white:
                 user_color = chess.WHITE
             elif self.target_user == black:
                 user_color = chess.BLACK
             else:
+                # Default to WHITE if username not found (fallback behavior)
                 user_color = chess.WHITE
 
             total_games += 1
@@ -104,20 +132,25 @@ class StockfishAnalyzer:
 
             prev_eval = 0.0
             moves = list(game.mainline_moves())
-            game_collapse_move = len(moves)
+            game_collapse_move = len(moves)  # Default: game completed without major blunder
 
             for idx, move in enumerate(moves):
+                # Check if it's the user's turn BEFORE applying the move
                 is_user_move = (board.turn == user_color)
                 board.push(move)
 
+                # Evaluate position after move (low time limit for speed)
                 info = engine.analyse(board, chess.engine.Limit(time=0.02))
                 score = info["score"].white()
                 current_eval = score.score(mate_score=1000) / 100.0 if score.score() is not None else 0.0
 
+                # Calculate evaluation change (positive = position got worse for user)
                 eval_delta = prev_eval - current_eval
+                # Flip sign if user is playing Black (inverse perspective)
                 if user_color == chess.BLACK:
                     eval_delta = -eval_delta
 
+                # Log blunder if user's move caused evaluation drop >= 1.5 centipawns
                 if is_user_move and eval_delta >= 1.5:
                     game_collapse_move = idx + 1
                     blunder_reports.append({
@@ -127,7 +160,7 @@ class StockfishAnalyzer:
                         "notation": str(move),
                         "loss_margin": round(eval_delta, 2)
                     })
-                    break
+                    break  # Stop analyzing this game after first major blunder
 
                 prev_eval = current_eval
 
@@ -135,6 +168,7 @@ class StockfishAnalyzer:
 
         engine.quit()
         
+        # Calculate statistics
         avg_collapse = int(total_collapse_moves / total_games) if total_games > 0 else 0
         primary_opening = max(set(openings_logged), key=openings_logged.count) if openings_logged else "Unknown"
         
@@ -142,27 +176,47 @@ class StockfishAnalyzer:
 
 
 def fetch_coach_review(total_games: int, avg_collapse: int, opening: str, blunders: list, history: list, message: str = None) -> str:
+    """
+    Generates AI coaching feedback using Ollama (llama3.2:3b model).
+    Requires Ollama to be running locally with the model pulled.
+    
+    Args:
+        total_games: Number of games analyzed
+        avg_collapse: Average move number where blunders occur
+        opening: Most frequently played opening
+        blunders: List of blunder events with details
+        history: Chat history for context
+        message: User's current question (if any)
+    
+    Returns:
+        AI-generated coaching response as string
+    """
+    # Summarize first 3 blunders for the AI
     summary = ""
     for log in blunders[:3]:
-        summary += f"- Game {log['game_id']} ({log['opening']}): Blunder on Move {log['move_number']} ({log['notation']}), dropping {log['loss_margin']} points.\n"
+        summary += f"- Game {log['game_id']} ({log['opening']}): Blunder on Move {log['move_number']} ({log['notation']}), dropped {log['loss_margin']} centipawns.\n"
 
-    system_prompt = f"""You are EricAI, a professional chess Grandmaster reviewing structural user match files.
-    
-    FACTUAL INSIGHT MATRIX:
-    - Total Profile Games: {total_games}
-    - Average Tactical Focus Break: Move {avg_collapse}
-    - Repertoire Preference Base: {opening}
-    
-    STOCKFISH CHRONICLE REQUISITION:
-    {summary if summary else "- Matrix stable. Zero severe blunder deviations logged."}
-    
-    COMPLIANCE DIRECTION: Speak naturally. Do not dump dictionary titles like 'GAMES PROFILED' back to user outputs."""
+    system_prompt = f"""You are EricAI, a professional chess coach analyzing player performance data.
+
+PLAYER PROFILE:
+- Games Analyzed: {total_games}
+- Average Move When Blunders Occur: Move {avg_collapse}
+- Primary Opening Played: {opening}
+
+DETECTED BLUNDERS:
+{summary if summary else "- No significant blunders detected in analyzed games."}
+
+INSTRUCTIONS:
+1. Provide natural, conversational coaching advice based on the data above.
+2. Avoid repeating raw data labels - speak like a human coach, not a machine.
+3. Only reference blunders and statistics that are provided above."""
 
     payload = [{"role": "system", "content": system_prompt}]
+    # Add chat history for context
     for msg in history:
         payload.append({"role": msg["role"], "content": msg["content"]})
         
-    payload.append({"role": "user", "content": message if message else "Provide a breakdown of my match performance records."})
+    payload.append({"role": "user", "content": message if message else "Give me a coaching breakdown of my chess performance."})
 
     try:
         response = ollama.chat(
@@ -172,40 +226,45 @@ def fetch_coach_review(total_games: int, avg_collapse: int, opening: str, blunde
         )
         return response['message']['content']
     except Exception as e:
-        return f"Model interaction variance caught: {str(e)}"
+        return f"Error: Ollama model unavailable. Ensure Ollama is running locally and llama3.2:3b is installed. {str(e)}"
 
 
-# --- APPLICATION DESKTOP WORKSPACE ---
+# === STREAMLIT UI LAYOUT ===
 st.markdown("<h1 style='font-weight: 700; letter-spacing: -1.5px;'>EricAI Pro</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color: #71717a; font-size: 14px; margin-bottom: 0.25rem;'>HYBRID STOCKFISH REASONING & ANALYTICAL REVIEW PLATFORM</p>", unsafe_allow_html=True)
 st.write("---")
 
 st.markdown("""
     <div class='hero-banner'>
-        <h2 style='color:#ffffff; margin:0 0 10px; font-size:28px;'>Performance Pipeline Engine</h2>
-        <p>Isolate your exact performance signals. Upload PGN match histories below to map real-time blunder thresholds cleanly.</p>
+        <h2 style='color:#ffffff; margin:0 0 10px; font-size:28px;'>Performance Analysis Engine</h2>
+        <p>Upload your PGN file to analyze blunders, identify tactical weaknesses, and get personalized coaching from EricAI.</p>
     </div>
 """, unsafe_allow_html=True)
 
-if "stats" not in st.session_state: st.session_state.stats = None
-if "messages" not in st.session_state: st.session_state.messages = []
+# Initialize session state for persistent data
+if "stats" not in st.session_state: 
+    st.session_state.stats = None
+if "messages" not in st.session_state: 
+    st.session_state.messages = []
 
-# Sidebar Layout Design Configuration
-st.sidebar.markdown("<h2 style='font-size: 18px;'>Data Control Panel</h2>", unsafe_allow_html=True)
-username_input = st.sidebar.text_input("Active Chess Account Profile ID", value="", placeholder="e.g., MagnusCarlsen")
-file_upload = st.sidebar.file_uploader("Upload Profile PGN Records", type=["pgn"])
-trigger_audit = st.sidebar.button("Execute Deep Engine Audit")
+# === SIDEBAR INPUT CONTROLS ===
+st.sidebar.markdown("<h2 style='font-size: 18px;'>Analysis Setup</h2>", unsafe_allow_html=True)
+username_input = st.sidebar.text_input("Chess Username", value="", placeholder="e.g., GothamChess")
+file_upload = st.sidebar.file_uploader("Upload PGN File", type=["pgn"])
+trigger_audit = st.sidebar.button("Analyze Games")
 
+# === MAIN ANALYSIS FLOW ===
 if file_upload and trigger_audit:
     if not username_input:
-        st.error("Please provide an account user signature key in the dashboard sidebar configuration block.")
+        st.error("⚠️ Please enter your chess username to identify your games.")
     else:
-        with st.spinner("Executing background data sweep parsing tracks..."):
+        with st.spinner("Analyzing games with Stockfish..."):
             stream = io.StringIO(file_upload.getvalue().decode("utf-8"))
             analyzer = StockfishAnalyzer(target_user=username_input)
             games_count, collapse_move, opening_base, logs = analyzer.run_audit(stream)
 
             if games_count > 0:
+                # Store results in session state
                 st.session_state.stats = {
                     "total": games_count,
                     "avg_moves": collapse_move,
@@ -213,33 +272,37 @@ if file_upload and trigger_audit:
                     "logs": logs
                 }
                 st.session_state.messages = []
+                # Generate initial AI response
                 initial_text = fetch_coach_review(games_count, collapse_move, opening_base, logs, [])
                 st.session_state.messages.append({"role": "assistant", "content": initial_text})
 
+# === DISPLAY ANALYSIS RESULTS ===
 if st.session_state.stats:
     cached = st.session_state.stats
-    st.markdown("### 📊 Engine Performance Intelligence")
+    st.markdown("### 📊 Analysis Summary")
     grid1, grid2, grid3 = st.columns(3)
     with grid1:
-        st.markdown(f'Games Audited<br><strong>{cached["total"]}</strong>', unsafe_allow_html=True)
+        st.markdown(f'**Games Audited**<br>{cached["total"]}', unsafe_allow_html=True)
     with grid2:
-        st.markdown(f'Avg Move Before Collapse<br><strong>{cached["avg_moves"]}</strong>', unsafe_allow_html=True)
+        st.markdown(f'**Avg Move Before Blunder**<br>{cached["avg_moves"]}', unsafe_allow_html=True)
     with grid3:
         truncated_title = (cached['opening'][:22] + '...') if len(cached['opening']) > 22 else cached['opening']
-        st.markdown(f'Opening Profile Base<br><strong>{truncated_title}</strong>', unsafe_allow_html=True)
+        st.markdown(f'**Primary Opening**<br>{truncated_title}', unsafe_allow_html=True)
 
-    st.markdown("### 💬 Chat Workflow Module")
+    st.markdown("### 💬 Chat with Coach EricAI")
+    # Display chat history
     for chat in st.session_state.messages:
         with st.chat_message(chat["role"]):
             st.markdown(chat["content"])
 
-    if query := st.chat_input("Query profile performance insights..."):
+    # Handle new user messages
+    if query := st.chat_input("Ask about your performance..."):
         with st.chat_message("user"):
             st.markdown(query)
         st.session_state.messages.append({"role": "user", "content": query})
 
         with st.chat_message("assistant"):
-            with st.spinner("Processing local matrix models..."):
+            with st.spinner("Coach is reviewing your data..."):
                 reply = fetch_coach_review(
                     cached['total'],
                     cached['avg_moves'],
