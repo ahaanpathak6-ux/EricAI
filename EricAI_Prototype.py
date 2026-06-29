@@ -351,4 +351,3 @@ if st.session_state.stats:
             st.markdown(coach_reply)
             st.session_state.messages.append({"role": "assistant", "content": coach_reply})
 
-# NOTE: The duplicate 'if uploaded_file is not None and analyze_button:' block that was located at the bottom has been removed to prevent double-execution artifacts.
